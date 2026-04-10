@@ -1,0 +1,39 @@
+# Scenarios config for multimodal-conv-bench
+# Each taxonomy has a list of scenario descriptions passed to the synthesis pipeline.
+# Add more scenarios here; --taxonomy all will iterate over all of them.
+
+incremental_state_tracking:
+  scenarios:
+    - "A home office desk being gradually reorganized across a workday — items moved, added, and removed turn by turn"
+    - "A whiteboard in a meeting room with equations and diagrams being added and erased over multiple snapshots"
+    - "A patient's wound being photographed across multiple clinic visits showing healing progression"
+
+belief_revision:
+  scenarios:
+    - "A blurry outdoor photo initially mistaken for one animal, later revealed by a clearer image to be a different species"
+    - "A partially assembled machine whose purpose seems obvious at first but is corrected by later close-up images"
+    - "A crime scene photograph that appears to support one suspect until additional angles reveal contradicting evidence"
+
+cross_turn_entity_tracking:
+  scenarios:
+    - "A marketplace with multiple vendors; the user asks about 'the same stall from earlier' across several photos"
+    - "A multi-room apartment tour where the user refers back to furniture seen in earlier rooms"
+    - "A group photo series where individuals move between frames and the user asks about 'the person in the red jacket' across turns"
+
+temporal_causal_reasoning:
+  scenarios:
+    - "Photos of a flooded street, the flood peak, and drainage — arriving out of order; user must reconstruct what happened"
+    - "Images of a soufflé at different stages of baking and collapse, not presented chronologically"
+    - "A car accident scene, the moment of collision, and road conditions beforehand — presented in scrambled order"
+
+interactive_visual_dialogue:
+  scenarios:
+    - "A user shares a blurry circuit board; the assistant guides them to take targeted close-ups to diagnose a fault"
+    - "Remote plant disease diagnosis where the assistant requests photos of leaves, roots, and soil after each turn"
+    - "An interior design assistant asks the user to photograph specific corners and angles to recommend furniture placement"
+
+strategic_info_acquisition:
+  scenarios:
+    - "A user wants to know if a bookshelf will fit in their room; model must request specific measurements and angles"
+    - "Diagnosing why a car won't start: model requests under-hood photos one at a time to narrow down the fault"
+    - "Assessing structural damage after an earthquake: model must request images of specific load-bearing areas"
