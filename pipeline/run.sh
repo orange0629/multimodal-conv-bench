@@ -33,7 +33,7 @@ MODEL="${MODEL:-qwen}"
 TAXONOMY="${TAXONOMY:-all}"
 
 # Number of samples per scenario
-N="${N:-5}"
+N="${N:-34}"   # 34 × 3 scenarios ≈ 100 conversations per taxonomy
 
 # Number of turn pairs per conversation
 N_TURNS="${N_TURNS:-4}"
