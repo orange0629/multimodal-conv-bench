@@ -140,9 +140,12 @@ def _clean_json_text(text: str) -> str:
     text = re.sub(r"\bNone\b", "null", text)
     text = re.sub(r"\bTrue\b", "true", text)
     text = re.sub(r"\bFalse\b", "false", text)
-    # Fix missing opening quote on string values:
+    # Fix completely unquoted string values — both quotes and trailing comma missing.
+    # Pattern: ": UnquotedText\n    "next_key"  (line ends bare, next line starts a new key)
+    #   →  ": "UnquotedText",\n    "next_key"
+    text = re.sub(r'(":\s+)([A-Za-z(][^"\n]+)(\s*\n\s*")', r'\1"\2",\3', text)
+    # Fix missing opening quote only — closing quote present before , } or ]
     #   "key": UnquotedContent",  →  "key": "UnquotedContent",
-    # Triggered when the value starts with a letter/(  instead of a valid JSON token.
     text = re.sub(r'(":\s+)([A-Za-z(][^"\n]*?)("(?=\s*[,}\]]))', r'\1"\2\3', text)
     # Trailing commas before ] or }
     text = re.sub(r",\s*([\]}])", r"\1", text)

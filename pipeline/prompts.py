@@ -47,10 +47,12 @@ Rules:
 - Do NOT include the answer in the conversation — only in ground_truth.
 - Output ONLY the JSON object. It MUST start with `{` and end with `}`. Do NOT wrap it in an array `[...]`. No markdown fences, no extra text before or after.
 
-CRITICAL — natural dialogue rules (violations make the benchmark useless):
-- User text must be SHORT and NATURAL. Real people sharing photos say "here's another one" or "what do you think caused this?" — NOT multi-sentence descriptions of what is in their own image. The image speaks for itself.
-- Assistant text must NEVER describe or narrate image content ("this image shows...", "I can see...", "in this photo..."). The assistant responds, hypothesises, asks follow-up questions — it does NOT transcribe what it sees into text. A model evaluating this benchmark must be FORCED to look at the image; if the answer is readable from the assistant's text alone, the item is worthless.
-- The reasoning difficulty must live in the IMAGES or IMAGES+DIALOGUE, not in the text only.
+CRITICAL — these violations make the benchmark worthless:
+- User text must be SHORT and NATURAL. Real people say "here's another one" or "what do you think?" — not multi-sentence narrations of their own image. The image speaks for itself.
+- Assistant text must NEVER narrate image content ("this image shows...", "I can see...", "in this photo..."). The assistant reacts, asks follow-up questions, or expresses partial uncertainty — it does NOT transcribe what it sees.
+- Assistant text must NEVER summarise or connect dots across turns. No "So, putting it all together...", no "The progression is A → B → C", no mid-conversation conclusions. The assistant must remain genuinely uncertain until the final question is asked. Synthesising across turns in the assistant's text hands the answer to any reader and destroys the benchmark.
+- Multiple-choice options MUST include at least two plausible wrong answers — options that a model would pick if it only saw one image, or misremembered a detail from an earlier turn. Trivially-wrong options (things no one would ever pick) waste items. Each wrong option should represent a coherent but incorrect reading of partial evidence.
+- The reasoning difficulty must live in the IMAGES and the cross-turn inference required to answer, not in the text of the conversation.
 """
 
 # ─── 1. Incremental State Tracking ──────────────────────────────────────────
@@ -75,6 +77,10 @@ Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
 {seed_image_hint}
+Before finalising, verify your item passes these checks:
+1. Can a model answer the final question by reading the conversation text alone, without looking at any image? If yes, rewrite — the difficulty must come from the images.
+2. Does the assistant anywhere summarise what it has learned across turns or hint at the answer? If yes, remove it.
+3. Are all wrong multiple-choice options obviously wrong? If yes, replace them with options that require cross-turn image evidence to rule out.
 {schema}""",
 }
 
@@ -101,6 +107,10 @@ Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
 {seed_image_hint}
+Before finalising, verify your item passes these checks:
+1. Can a model answer the final question by reading the conversation text alone, without looking at any image? If yes, rewrite — the difficulty must come from the images.
+2. Does the assistant anywhere summarise what it has learned across turns or hint at the answer? If yes, remove it.
+3. Are all wrong multiple-choice options obviously wrong? If yes, replace them with options that require cross-turn image evidence to rule out.
 {schema}""",
 }
 
@@ -128,6 +138,10 @@ Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
 {seed_image_hint}
+Before finalising, verify your item passes these checks:
+1. Can a model answer the final question by reading the conversation text alone, without looking at any image? If yes, rewrite — the difficulty must come from the images.
+2. Does the assistant anywhere summarise what it has learned across turns or hint at the answer? If yes, remove it.
+3. Are all wrong multiple-choice options obviously wrong? If yes, replace them with options that require cross-turn image evidence to rule out.
 {schema}""",
 }
 
@@ -155,6 +169,10 @@ Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
 {seed_image_hint}
+Before finalising, verify your item passes these checks:
+1. Can a model answer the final question by reading the conversation text alone, without looking at any image? If yes, rewrite — the difficulty must come from the images.
+2. Does the assistant anywhere summarise what it has learned across turns or hint at the answer? If yes, remove it.
+3. Are all wrong multiple-choice options obviously wrong? If yes, replace them with options that require cross-turn image evidence to rule out.
 {schema}""",
 }
 
@@ -184,6 +202,10 @@ Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
 {seed_image_hint}
+Before finalising, verify your item passes these checks:
+1. Can a model answer the final question by reading the conversation text alone, without looking at any image? If yes, rewrite — the difficulty must come from the images.
+2. Does the assistant anywhere summarise what it has learned across turns or hint at the answer? If yes, remove it.
+3. Are all wrong multiple-choice options obviously wrong? If yes, replace them with options that require cross-turn image evidence to rule out.
 {schema}""",
 }
 
@@ -216,6 +238,10 @@ Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
 {seed_image_hint}
+Before finalising, verify your item passes these checks:
+1. Can a model answer the final question by reading the conversation text alone, without looking at any image? If yes, rewrite — the difficulty must come from the images.
+2. Does the assistant anywhere summarise what it has learned across turns or hint at the answer? If yes, remove it.
+3. Are all wrong multiple-choice options obviously wrong? If yes, replace them with options that require cross-turn image evidence to rule out.
 {schema}""",
 }
 
