@@ -132,6 +132,23 @@ def _strip_thinking(text: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
 
 
+def _clean_json_text(text: str) -> str:
+    """Apply common model output fixups to a JSON string."""
+    # Strip // line comments
+    text = re.sub(r"//[^\n]*", "", text)
+    # Python literals → JSON
+    text = re.sub(r"\bNone\b", "null", text)
+    text = re.sub(r"\bTrue\b", "true", text)
+    text = re.sub(r"\bFalse\b", "false", text)
+    # Fix missing opening quote on string values:
+    #   "key": UnquotedContent",  →  "key": "UnquotedContent",
+    # Triggered when the value starts with a letter/(  instead of a valid JSON token.
+    text = re.sub(r'(":\s+)([A-Za-z(][^"\n]*?)("(?=\s*[,}\]]))', r'\1"\2\3', text)
+    # Trailing commas before ] or }
+    text = re.sub(r",\s*([\]}])", r"\1", text)
+    return text
+
+
 def _parse_json(text: str) -> dict:
     """Strip markdown fences and common model JSON quirks, then parse."""
     text = text.strip()
@@ -140,9 +157,22 @@ def _parse_json(text: str) -> dict:
         start = 1
         end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
         text = "\n".join(lines[start:end])
-    # Strip trailing commas before ] or } — common model output artifact
-    text = re.sub(r",\s*([\]}])", r"\1", text)
-    return json.loads(text)
+
+    text = _clean_json_text(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Model may have added preamble/postamble text around the JSON.
+        # Try to extract the outermost array or object.
+        for open_c, close_c in [("[", "]"), ("{", "}")]:
+            start = text.find(open_c)
+            end   = text.rfind(close_c)
+            if start != -1 and end > start:
+                try:
+                    return json.loads(_clean_json_text(text[start:end + 1]))
+                except json.JSONDecodeError:
+                    pass
+        raise  # re-raise the original error
 
 # ─── Backend implementations ──────────────────────────────────────────────────
 
@@ -228,14 +258,14 @@ def run_batch(
     else:
         raws = generate_openai_batch(model_id, all_messages, temperature)
 
-    # Parse results; retry individually on JSON failure
+    # Parse results; retry individually on parse failure
     with open(out_file, "w") as f:
         for idx, ((scenario, i), raw) in enumerate(zip(jobs, raws)):
             try:
                 result = _parse_raw(raw, tax_key, scenario, mode, model_id, backend)
-            except json.JSONDecodeError as e:
-                # Retry this one item sequentially
-                print(f"  [retry] item {idx} JSON error: {e} — retrying ...", file=sys.stderr)
+            except (json.JSONDecodeError, TypeError, KeyError, ValueError) as e:
+                print(f"  [retry] item {idx} parse error: {type(e).__name__}: {e}", file=sys.stderr)
+                print(f"    raw output: {raw[:300]}", file=sys.stderr)
                 result = None
                 for attempt in range(1, max_retries + 1):
                     try:
@@ -248,7 +278,7 @@ def run_batch(
                         result = _parse_raw(r, tax_key, scenario, mode, model_id, backend)
                         break
                     except Exception as e2:
-                        print(f"    attempt {attempt}/{max_retries}: {e2}", file=sys.stderr)
+                        print(f"    attempt {attempt}/{max_retries}: {type(e2).__name__}: {e2}", file=sys.stderr)
                 if result is None:
                     result = {"_error": f"failed after {max_retries} retries",
                               "_meta": _make_meta(tax_key, scenario, mode, model_id, backend)}
@@ -326,10 +356,14 @@ def _gen_scenarios_for_taxonomy(
     messages = build_scenario_gen_messages(taxonomy=taxonomy, layer=1,
                                            n_themes=n_themes, used_domains=[])
     print("  [layer1] generating themes ...", file=sys.stderr)
-    raw    = _call_llm(backend, model_id, messages, temperature, llm, tok)
-    themes = _parse_json(_strip_thinking(raw))
+    raw = _call_llm(backend, model_id, messages, temperature, llm, tok)
+    try:
+        themes = _parse_json(_strip_thinking(raw))
+    except json.JSONDecodeError as e:
+        print(f"  [layer1 parse error] {e}\n  [raw output] {raw}", file=sys.stderr)
+        raise
     if not isinstance(themes, list):
-        raise ValueError(f"Layer 1 returned non-list: {raw[:200]}")
+        raise ValueError(f"Layer 1 returned non-list: {raw}")
     print(f"  [layer1] got {len(themes)} themes", file=sys.stderr)
 
     # Layer 2: batch all theme prompts together for vllm

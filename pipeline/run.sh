@@ -42,8 +42,8 @@ MODE="${MODE:-text-only}"
 TP="${TP:-2}"
 
 # Scenario generation (auto-runs on first use, cached after)
-N_THEMES="${N_THEMES:-10}"
-N_PER_THEME="${N_PER_THEME:-10}"
+N_THEMES="${N_THEMES:-20}"
+N_PER_THEME="${N_PER_THEME:-5}"
 REGEN="${REGEN:-}"           # set to "--regen" to force regeneration
 
 # Inline scenario string (skips auto-generation entirely)
@@ -80,6 +80,7 @@ PYARGS=(
     --n-themes "$N_THEMES"
     --n-per-theme "$N_PER_THEME"
     --output-dir "$OUTPUT_DIR"
+    --memory-efficient
 )
 
 [[ -n "$SCENARIO" ]] && PYARGS+=(--scenario "$SCENARIO")

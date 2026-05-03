@@ -45,7 +45,12 @@ Rules:
 - Alternate user/assistant roles strictly.
 - image_description must be detailed enough to generate or retrieve a real image (include objects, spatial layout, colors, lighting, style).
 - Do NOT include the answer in the conversation — only in ground_truth.
-- Output ONLY the JSON object, no markdown fences or extra text.
+- Output ONLY the JSON object. It MUST start with `{` and end with `}`. Do NOT wrap it in an array `[...]`. No markdown fences, no extra text before or after.
+
+CRITICAL — natural dialogue rules (violations make the benchmark useless):
+- User text must be SHORT and NATURAL. Real people sharing photos say "here's another one" or "what do you think caused this?" — NOT multi-sentence descriptions of what is in their own image. The image speaks for itself.
+- Assistant text must NEVER describe or narrate image content ("this image shows...", "I can see...", "in this photo..."). The assistant responds, hypothesises, asks follow-up questions — it does NOT transcribe what it sees into text. A model evaluating this benchmark must be FORCED to look at the image; if the answer is readable from the assistant's text alone, the item is worthless.
+- The reasoning difficulty must live in the IMAGES or IMAGES+DIALOGUE, not in the text only.
 """
 
 # ─── 1. Incremental State Tracking ──────────────────────────────────────────
@@ -304,7 +309,10 @@ SCENARIO_GEN_LAYER1 = {
         "Generate DIVERSE high-level scenario themes for a given reasoning taxonomy. "
         "Each theme must probe the taxonomy from a structurally different angle, "
         "be grounded in a distinct real-world domain, and present a genuinely different "
-        "type of reasoning challenge — not just a different noun substitution."
+        "type of reasoning challenge — not just a different noun substitution. "
+        "Prioritise creativity in HOW the taxonomy is tested over diversity of domains. "
+        "Choose settings that a general audience can understand without specialist training; "
+        "avoid highly niche professional or academic fields."
     ),
     "user": (
         "Taxonomy: {taxonomy_name}\n"
@@ -325,7 +333,10 @@ SCENARIO_GEN_LAYER2 = {
         "You are generating specific benchmark scenarios from a high-level theme. "
         "Each scenario must be CONCRETELY different — not template variations with "
         "different nouns. Vary: number of entities, structure of visual changes, "
-        "domain specifics, and the type of multi-turn interaction required."
+        "domain specifics, and the type of multi-turn interaction required. "
+        "Prioritise creativity in HOW the taxonomy is tested over diversity of domains. "
+        "Keep settings broadly accessible; avoid highly specialised professional jargon "
+        "that a general audience would not recognise."
     ),
     "user": (
         "Taxonomy: {taxonomy_name}\n"
@@ -337,7 +348,7 @@ SCENARIO_GEN_LAYER2 = {
         '    "scenario_id": "{taxonomy_key}_{theme_id:02d}_{idx:02d}",\n'
         '    "description": "<2-3 sentence scenario, specific enough to guide synthesis>",\n'
         '    "key_entities": ["<entity 1 with specific name>", "<entity 2>", ...],\n'
-        '    "expected_question_type": "<entity | yes_no | ordering | count>",\n'
+        '    "expected_question_type": "<multiple_choice | yes_no | count>",\n'
         '    "why_challenging": "<what a model without full history would get wrong>"\n'
         "  }},\n  ...\n]\n\nOutput ONLY the JSON array."
     ),
