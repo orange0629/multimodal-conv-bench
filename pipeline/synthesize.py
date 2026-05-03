@@ -49,9 +49,9 @@ from pathlib import Path
 
 import yaml
 
-from prompts import TAXONOMIES, TAXONOMY_ALIASES, build_messages
+from prompts import (TAXONOMIES, TAXONOMY_ALIASES, build_messages,
+                     build_scenario_gen_messages)
 
-DEFAULT_N_TURNS  = 4
 DEFAULT_OUTPUT_DIR = Path(__file__).parent.parent / "output"
 
 # ─── Model shorthands & per-model configs ────────────────────────────────────
@@ -95,22 +95,14 @@ def get_model_config(model_id: str) -> dict:
             return cfg
     return _FALLBACK_CONFIG
 
-# ─── Model cache (loaded once per process) ────────────────────────────────────
+# ─── Model loading ────────────────────────────────────────────────────────────
 
-_vllm_cache: dict = {}   # model_id -> LLM instance
-
-
-def _load_vllm(model_id: str, tensor_parallel_size: int = 1):
-    if model_id not in _vllm_cache:
-        from vllm import LLM
-        print(f"[vllm] Loading {model_id} (tp={tensor_parallel_size}) ...", file=sys.stderr)
-        _vllm_cache[model_id] = LLM(
-            model=model_id,
-            tensor_parallel_size=tensor_parallel_size,
-            dtype="bfloat16",
-        )
-        print("[vllm] Model ready.", file=sys.stderr)
-    return _vllm_cache[model_id]
+def load_vllm(model_id: str, tensor_parallel_size: int = 1):
+    from vllm import LLM
+    print(f"[vllm] Loading {model_id} (tp={tensor_parallel_size}) ...", file=sys.stderr)
+    llm = LLM(model=model_id, tensor_parallel_size=tensor_parallel_size)
+    print("[vllm] Model ready.", file=sys.stderr)
+    return llm, llm.get_tokenizer()
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -131,95 +123,53 @@ def _parse_json(text: str) -> dict:
 
 # ─── Backend implementations ──────────────────────────────────────────────────
 
-def _generate_vllm(model_id: str, messages: list[dict],
-                   temperature: float, tensor_parallel_size: int) -> str:
+def generate_vllm_batch(llm, tok, model_id: str,
+                        messages_list: list[list[dict]], temperature: float) -> list[str]:
+    """Submit all prompts in one vLLM call for maximum throughput."""
     from vllm import SamplingParams
+    cfg = get_model_config(model_id)
+    sp  = {**cfg["sampling"], "temperature": temperature}
 
-    llm   = _load_vllm(model_id, tensor_parallel_size)
-    tok   = llm.get_tokenizer()
-    cfg   = get_model_config(model_id)
-    sp    = {**cfg["sampling"], "temperature": temperature}
-
-    prompt = tok.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        **cfg["chat_template_kwargs"],
-    )
-
-    params  = SamplingParams(**sp)
-    outputs = llm.generate([prompt], params)
-    raw     = outputs[0].outputs[0].text.strip()
-    return _strip_thinking(raw)
+    prompts = [
+        tok.apply_chat_template(m, tokenize=False, add_generation_prompt=True,
+                                **cfg["chat_template_kwargs"])
+        for m in messages_list
+    ]
+    print(f"[vllm] submitting batch of {len(prompts)} prompts ...", file=sys.stderr)
+    outputs = llm.generate(prompts, SamplingParams(**sp))
+    return [_strip_thinking(o.outputs[0].text.strip()) for o in outputs]
 
 
-def _generate_openai(model_id: str, messages: list[dict],
-                     temperature: float, **_) -> str:
+def generate_openai_batch(model_id: str, messages_list: list[list[dict]],
+                          temperature: float) -> list[str]:
+    """Sequential OpenAI calls (no native batch API)."""
     from openai import OpenAI
     client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
-    resp = client.chat.completions.create(
-        model=model_id,
-        messages=messages,
-        temperature=temperature,
-        response_format={"type": "json_object"},
-    )
-    return resp.choices[0].message.content.strip()
-
-
-BACKENDS = {
-    "vllm":   _generate_vllm,
-    "openai": _generate_openai,
-}
+    results = []
+    for messages in messages_list:
+        resp = client.chat.completions.create(
+            model=model_id, messages=messages, temperature=temperature,
+            response_format={"type": "json_object"},
+        )
+        results.append(resp.choices[0].message.content.strip())
+    return results
 
 # ─── Core generation ──────────────────────────────────────────────────────────
 
-def generate_one(
-    backend: str,
-    model_id: str,
-    taxonomy: str,
-    scenario: str,
-    n_turns: int,
-    mode: str,
-    seed_image_description: str | None = None,
-    temperature: float | None = None,
-    tensor_parallel_size: int = 1,
-    max_retries: int = 3,
-) -> dict:
-    taxonomy  = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
-    messages  = build_messages(taxonomy, scenario, n_turns, mode, seed_image_description)
-    gen_fn    = BACKENDS[backend]
-    eff_temp  = temperature if temperature is not None \
-                else get_model_config(model_id)["sampling"]["temperature"]
+def _make_meta(taxonomy, scenario, mode, model_id, backend):
+    return {
+        "taxonomy": taxonomy, "scenario": scenario, "mode": mode,
+        "model": model_id, "backend": backend,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
 
-    last_err = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            raw = gen_fn(model_id, messages, eff_temp, tensor_parallel_size=tensor_parallel_size)
-        except Exception as e:
-            last_err = e
-            print(f"  [retry {attempt}/{max_retries}] generation error: {e}", file=sys.stderr)
-            continue
-        try:
-            parsed = _parse_json(raw)
-        except json.JSONDecodeError as e:
-            last_err = e
-            print(f"  [retry {attempt}/{max_retries}] JSON parse error: {e}\n"
-                  f"  Raw (first 400): {raw[:400]}", file=sys.stderr)
-            continue
 
-        parsed["_meta"] = {
-            "taxonomy":  taxonomy,
-            "scenario":  scenario,
-            "mode":      mode,
-            "model":     model_id,
-            "backend":   backend,
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-        }
-        return parsed
+def _parse_raw(raw: str, taxonomy: str, scenario: str,
+               mode: str, model_id: str, backend: str) -> dict:
+    parsed = _parse_json(raw)
+    parsed["_meta"] = _make_meta(taxonomy, scenario, mode, model_id, backend)
+    return parsed
 
-    raise RuntimeError(f"Failed after {max_retries} attempts. Last: {last_err}")
-
-# ─── Batch runner ─────────────────────────────────────────────────────────────
 
 def run_batch(
     backend: str,
@@ -227,54 +177,93 @@ def run_batch(
     taxonomy: str,
     scenarios: list[str],
     n: int,
-    n_turns: int,
     mode: str,
     output_dir: Path,
-    temperature: float | None = None,
-    tensor_parallel_size: int = 1,
+    temperature: float,
+    llm=None,
+    tok=None,
     verbose: bool = False,
+    max_retries: int = 3,
 ) -> Path:
-    tax_key = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
-    out_dir = output_dir / tax_key
+    tax_key  = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
+    out_dir  = output_dir / tax_key
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.jsonl"
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    out_file  = out_dir / f"{timestamp}.jsonl"
-    total     = len(scenarios) * n
-    done      = 0
+    # Build every (scenario, repeat) job
+    jobs = [(s, i) for s in scenarios for i in range(n)]
+    all_messages = [
+        build_messages(tax_key, scenario, mode)
+        for scenario, _ in jobs
+    ]
 
+    print(f"[{tax_key}] {len(jobs)} conversations to generate", file=sys.stderr)
+
+    # Generate — one big batch for vllm, sequential for openai
+    if backend == "vllm":
+        raws = generate_vllm_batch(llm, tok, model_id, all_messages, temperature)
+    else:
+        raws = generate_openai_batch(model_id, all_messages, temperature)
+
+    # Parse results; retry individually on JSON failure
     with open(out_file, "w") as f:
-        for scenario in scenarios:
-            for i in range(n):
-                done += 1
-                print(f"[{done}/{total}] {tax_key} | sample {i+1} | '{scenario[:60]}'",
-                      file=sys.stderr)
-                try:
-                    result = generate_one(
-                        backend, model_id, tax_key, scenario,
-                        n_turns, mode,
-                        temperature=temperature,
-                        tensor_parallel_size=tensor_parallel_size,
-                    )
-                    f.write(json.dumps(result, ensure_ascii=False) + "\n")
-                    f.flush()
-                    if verbose:
-                        print(json.dumps(result, indent=2, ensure_ascii=False))
-                except Exception as e:
-                    print(f"  [error] {e}", file=sys.stderr)
-                    f.write(json.dumps({
-                        "_error": str(e),
-                        "_meta": {"taxonomy": tax_key, "scenario": scenario, "sample": i},
-                    }) + "\n")
-                    f.flush()
+        for idx, ((scenario, i), raw) in enumerate(zip(jobs, raws)):
+            try:
+                result = _parse_raw(raw, tax_key, scenario, mode, model_id, backend)
+            except json.JSONDecodeError as e:
+                # Retry this one item sequentially
+                print(f"  [retry] item {idx} JSON error: {e} — retrying ...", file=sys.stderr)
+                result = None
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        if backend == "vllm":
+                            r = generate_vllm_batch(llm, tok, model_id,
+                                                    [all_messages[idx]], temperature)[0]
+                        else:
+                            r = generate_openai_batch(model_id,
+                                                      [all_messages[idx]], temperature)[0]
+                        result = _parse_raw(r, tax_key, scenario, mode, model_id, backend)
+                        break
+                    except Exception as e2:
+                        print(f"    attempt {attempt}/{max_retries}: {e2}", file=sys.stderr)
+                if result is None:
+                    result = {"_error": f"failed after {max_retries} retries",
+                              "_meta": _make_meta(tax_key, scenario, mode, model_id, backend)}
 
-    print(f"\n[done] {total} records → {out_file}", file=sys.stderr)
+            f.write(json.dumps(result, ensure_ascii=False) + "\n")
+            f.flush()
+            if verbose:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+
+    print(f"[{tax_key}] wrote {len(jobs)} records → {out_file}", file=sys.stderr)
     return out_file
 
 # ─── Config loading ────────────────────────────────────────────────────────────
 
 def load_scenarios_from_config(config_path: str, taxonomy: str) -> dict[str, list[str]]:
-    with open(config_path) as f:
+    """Load from YAML (static config) or a directory of generated JSONL files."""
+    path = Path(config_path)
+
+    # Directory of generated JSONL files (one per taxonomy)
+    if path.is_dir():
+        tax_key = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
+        result: dict[str, list[str]] = {}
+        targets = list(TAXONOMIES.keys()) if taxonomy == "all" else [tax_key]
+        for tax in targets:
+            jsonl = path / f"{tax}.jsonl"
+            if jsonl.exists():
+                descriptions = []
+                with open(jsonl) as f:
+                    for line in f:
+                        obj = json.loads(line)
+                        descriptions.append(obj["description"])
+                result[tax] = descriptions
+            else:
+                print(f"  [warn] no scenario file for '{tax}' in {path}", file=sys.stderr)
+        return result
+
+    # YAML static config
+    with open(path) as f:
         cfg = yaml.safe_load(f)
     tax_key = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
     if taxonomy == "all":
@@ -283,6 +272,88 @@ def load_scenarios_from_config(config_path: str, taxonomy: str) -> dict[str, lis
         return {tax_key: cfg[tax_key].get("scenarios", [])}
     else:
         raise ValueError(f"Taxonomy '{taxonomy}' not in config {config_path}")
+
+# ─── Scenario generation (two-layer) ──────────────────────────────────────────
+
+DEFAULT_SCENARIO_DIR = Path(__file__).parent.parent / "configs" / "generated"
+
+
+def _call_llm(backend: str, model_id: str, messages: list[dict],
+              temperature: float, llm=None, tok=None) -> str:
+    """Single LLM call — uses pre-loaded llm/tok for vllm, OpenAI client otherwise."""
+    if backend == "vllm":
+        return generate_vllm_batch(llm, tok, model_id, [messages], temperature)[0]
+    else:
+        return generate_openai_batch(model_id, [messages], temperature)[0]
+
+
+def _gen_scenarios_for_taxonomy(
+    backend: str, model_id: str, taxonomy: str,
+    n_themes: int, n_per_theme: int,
+    temperature: float, out_dir: Path,
+    llm=None, tok=None,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"{taxonomy}.jsonl"
+
+    print(f"\n[gen-scenarios] {taxonomy}: {n_themes} themes × {n_per_theme} = "
+          f"{n_themes * n_per_theme} scenarios", file=sys.stderr)
+
+    # Layer 1: themes (single prompt)
+    messages = build_scenario_gen_messages(taxonomy=taxonomy, layer=1,
+                                           n_themes=n_themes, used_domains=[])
+    print("  [layer1] generating themes ...", file=sys.stderr)
+    raw    = _call_llm(backend, model_id, messages, temperature, llm, tok)
+    themes = _parse_json(_strip_thinking(raw))
+    if not isinstance(themes, list):
+        raise ValueError(f"Layer 1 returned non-list: {raw[:200]}")
+    print(f"  [layer1] got {len(themes)} themes", file=sys.stderr)
+
+    # Layer 2: batch all theme prompts together for vllm
+    layer2_messages = [
+        build_scenario_gen_messages(
+            taxonomy=taxonomy, layer=2, n_per_theme=n_per_theme,
+            theme=theme, theme_id=theme_id,
+            existing_scenarios=[],   # diversity handled by layer1 themes
+        )
+        for theme_id, theme in enumerate(themes)
+    ]
+
+    if backend == "vllm":
+        print(f"  [layer2] batching {len(layer2_messages)} theme prompts ...", file=sys.stderr)
+        layer2_raws = generate_vllm_batch(llm, tok, model_id, layer2_messages, temperature)
+    else:
+        layer2_raws = [
+            _call_llm(backend, model_id, m, temperature, llm, tok)
+            for m in layer2_messages
+        ]
+
+    # Parse layer 2 results
+    all_scenarios: list[dict] = []
+    for theme_id, (theme, raw) in enumerate(zip(themes, layer2_raws)):
+        print(f"  [layer2] theme {theme_id:02d} '{theme['theme']}' ...", file=sys.stderr)
+        try:
+            scenarios = _parse_json(_strip_thinking(raw))
+            if not isinstance(scenarios, list):
+                raise ValueError(f"non-list: {raw[:200]}")
+        except Exception as e:
+            print(f"    [error] {e}", file=sys.stderr)
+            continue
+
+        for idx, s in enumerate(scenarios):
+            s["scenario_id"] = f"{taxonomy}_{theme_id:02d}_{idx:02d}"
+            s["theme"] = theme["theme"]
+            s["domain"] = theme["domain"]
+            all_scenarios.append(s)
+        print(f"    → {len(scenarios)} scenarios ({len(all_scenarios)} total)", file=sys.stderr)
+
+    with open(out_file, "w") as f:
+        for s in all_scenarios:
+            f.write(json.dumps(s, ensure_ascii=False) + "\n")
+
+    print(f"  wrote {len(all_scenarios)} → {out_file}", file=sys.stderr)
+    return out_file
+
 
 # ─── CLI ──────────────────────────────────────────────────────────────────────
 
@@ -298,69 +369,109 @@ def parse_args():
     p.add_argument("--scenario", "-s", default=None,
                    help="Scenario string (single run; overrides --config).")
     p.add_argument("--config", "-c", default=None,
-                   help="YAML config with scenarios (see configs/scenarios.yaml).")
+                   help="YAML file or directory of generated JSONL files.")
     p.add_argument("--n", "-n", type=int, default=1,
                    help="Samples per scenario. Default: 1")
-    p.add_argument("--n-turns", type=int, default=DEFAULT_N_TURNS,
-                   help=f"User+assistant turn pairs per conversation. Default: {DEFAULT_N_TURNS}")
     p.add_argument("--mode", choices=["text-only", "with-images"], default="text-only")
     p.add_argument("--seed-image-dir", default=None)
 
-    p.add_argument("--backend", choices=["vllm", "openai"], default="vllm",
-                   help="Inference backend. Default: vllm")
+    p.add_argument("--backend", choices=["vllm", "openai"], default="vllm")
     p.add_argument("--model", "-m", default="qwen",
-                   help="Model shorthand (gemma | qwen) or full model ID / local path. "
-                        f"Shorthands: {MODEL_SHORTHANDS}")
-    p.add_argument("--temperature", type=float, default=None,
-                   help="Override sampling temperature (uses per-model default if omitted).")
+                   help=f"Model shorthand (gemma|qwen) or full ID. Shorthands: {MODEL_SHORTHANDS}")
+    p.add_argument("--temperature", type=float, default=None)
     p.add_argument("--tp", type=int, default=1,
-                   help="Tensor parallel size for vLLM (number of GPUs). Default: 1")
+                   help="Tensor parallel size for vLLM. Default: 1")
 
     p.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     p.add_argument("--verbose", "-v", action="store_true")
+
+    # Scenario generation config (auto-runs on first use, cached after)
+    p.add_argument("--n-themes", type=int, default=10,
+                   help="Layer-1 themes per taxonomy (used only when generating). Default: 10")
+    p.add_argument("--n-per-theme", type=int, default=10,
+                   help="Layer-2 scenarios per theme (used only when generating). Default: 10")
+    p.add_argument("--scenario-dir", default=str(DEFAULT_SCENARIO_DIR),
+                   help=f"Cache dir for generated scenario JSONL files. Default: {DEFAULT_SCENARIO_DIR}")
+    p.add_argument("--regen", action="store_true",
+                   help="Force scenario regeneration even if cache exists.")
     return p.parse_args()
+
+
+def _ensure_scenarios(args, model_id: str, eff_temp: float, targets: list[str],
+                      llm=None, tok=None) -> dict[str, list[str]]:
+    """Return scenario descriptions per taxonomy, generating missing ones on the fly."""
+    scenario_dir = Path(args.scenario_dir)
+    scenario_dir.mkdir(parents=True, exist_ok=True)
+    taxonomy_scenarios: dict[str, list[str]] = {}
+
+    for taxonomy in targets:
+        cache_file = scenario_dir / f"{taxonomy}.jsonl"
+
+        if cache_file.exists() and not args.regen:
+            print(f"[scenarios] {taxonomy}: using cache ({cache_file})", file=sys.stderr)
+        else:
+            print(f"[scenarios] {taxonomy}: cache missing — generating ...", file=sys.stderr)
+            try:
+                _gen_scenarios_for_taxonomy(
+                    args.backend, model_id, taxonomy,
+                    n_themes=args.n_themes,
+                    n_per_theme=args.n_per_theme,
+                    temperature=eff_temp,
+                    out_dir=scenario_dir,
+                    llm=llm, tok=tok,
+                )
+            except Exception as e:
+                print(f"[error] scenario generation failed for '{taxonomy}': {e}", file=sys.stderr)
+                continue
+
+        descriptions = []
+        with open(cache_file) as f:
+            for line in f:
+                obj = json.loads(line)
+                descriptions.append(obj["description"])
+        taxonomy_scenarios[taxonomy] = descriptions
+
+    return taxonomy_scenarios
 
 
 def main():
     args     = parse_args()
     model_id = resolve_model(args.model)
-    out_dir  = Path(args.output_dir)
+    eff_temp = args.temperature if args.temperature is not None \
+               else get_model_config(model_id)["sampling"]["temperature"]
 
     print(f"[config] backend={args.backend}  model={model_id}  "
           f"tp={args.tp}  mode={args.mode}", file=sys.stderr)
 
-    # Resolve taxonomy → scenarios
+    # ── Load model once upfront ────────────────────────────────────────────────
+    llm, tok = (load_vllm(model_id, args.tp) if args.backend == "vllm"
+                else (None, None))
+
+    tax_key = TAXONOMY_ALIASES.get(args.taxonomy, args.taxonomy)
+    targets = list(TAXONOMIES.keys()) if args.taxonomy == "all" else [tax_key]
+
+    # Resolve scenarios — inline string skips generation entirely
     if args.scenario:
-        tax_key = TAXONOMY_ALIASES.get(args.taxonomy, args.taxonomy)
-        if args.taxonomy == "all":
-            taxonomy_scenarios = {k: [args.scenario] for k in TAXONOMIES}
-        else:
-            taxonomy_scenarios = {tax_key: [args.scenario]}
+        taxonomy_scenarios = {t: [args.scenario] for t in targets}
     elif args.config:
         taxonomy_scenarios = load_scenarios_from_config(args.config, args.taxonomy)
     else:
-        default_cfg = Path(__file__).parent.parent / "configs" / "scenarios.yaml"
-        if default_cfg.exists():
-            print(f"[info] No --scenario/--config; using {default_cfg}", file=sys.stderr)
-            taxonomy_scenarios = load_scenarios_from_config(str(default_cfg), args.taxonomy)
-        else:
-            print("Error: provide --scenario, --config, or populate configs/scenarios.yaml",
-                  file=sys.stderr)
-            sys.exit(1)
+        taxonomy_scenarios = _ensure_scenarios(args, model_id, eff_temp, targets,
+                                               llm=llm, tok=tok)
 
+    out_dir = Path(args.output_dir)
     all_outputs = []
     for taxonomy, scenarios in taxonomy_scenarios.items():
         if not scenarios:
-            print(f"[skip] No scenarios for '{taxonomy}'", file=sys.stderr)
+            print(f"[skip] no scenarios for '{taxonomy}'", file=sys.stderr)
             continue
         out_file = run_batch(
             args.backend, model_id, taxonomy, scenarios,
             n=args.n,
-            n_turns=args.n_turns,
             mode=args.mode,
             output_dir=out_dir,
-            temperature=args.temperature,
-            tensor_parallel_size=args.tp,
+            temperature=eff_temp,
+            llm=llm, tok=tok,
             verbose=args.verbose,
         )
         all_outputs.append(str(out_file))

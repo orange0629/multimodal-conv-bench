@@ -29,17 +29,21 @@ Return a single valid JSON object with this exact structure:
     // ... alternate user/assistant turns
   ],
   "ground_truth": {
-    "final_answer": "<the correct final answer to the last question>",
+    "question_type": "<multiple_choice | yes_no | count>",
+    "answer": "<the correct option letter (A/B/...) for multiple_choice; 'yes'/'no'; or a number string>",
     "reasoning_chain": "<step-by-step explanation of the correct reasoning across turns>",
     "key_difficulty": "<what makes this hard for a model — what single-turn reasoning would miss>"
   }
 }
 
 Rules:
+- The LAST turn MUST be role=user and contain a single, clearly-phrased question (no image; image_description=null).
+- The question must be UNANSWERABLE from the last image alone — it requires the full conversation history.
+- For multiple_choice: list the options directly in the question text (e.g. "A) ... B) ... C) ..."). Answer is the correct letter.
+- For yes_no: answer is "yes" or "no". For count: answer is a number string.
 - Always start with a user turn that includes an image.
 - Alternate user/assistant roles strictly.
 - image_description must be detailed enough to generate or retrieve a real image (include objects, spatial layout, colors, lighting, style).
-- The final user turn must contain a concrete answerable question.
 - Do NOT include the answer in the conversation — only in ground_truth.
 - Output ONLY the JSON object, no markdown fences or extra text.
 """
@@ -61,8 +65,7 @@ Quality criteria:
 - The final question should require integrating at least 3 distinct observations from different turns.
 - Include at least one turn where the scene appears similar to a much earlier turn (to test memory).
 """,
-    "user_template": """Scenario domain: {scenario}
-Number of turns (user+assistant pairs): {n_turns}
+    "user_template": """Scenario: {scenario}
 Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
@@ -88,8 +91,7 @@ Quality criteria:
 - Include a turn where the model's first answer was reasonable but wrong given new evidence.
 - The ground truth must explain what the initial misleading interpretation was and why.
 """,
-    "user_template": """Scenario domain: {scenario}
-Number of turns (user+assistant pairs): {n_turns}
+    "user_template": """Scenario: {scenario}
 Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
@@ -116,8 +118,7 @@ Quality criteria:
 - The final question should require correctly identifying a specific entity using a cross-turn reference.
 - Distractor entities (visually similar but different) should appear to make tracking non-trivial.
 """,
-    "user_template": """Scenario domain: {scenario}
-Number of turns (user+assistant pairs): {n_turns}
+    "user_template": """Scenario: {scenario}
 Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
@@ -144,8 +145,7 @@ Quality criteria:
 - The final question should require both correct temporal ordering AND causal reasoning.
 - Do not give explicit timestamps or numbering in the images — ordering must be inferred visually.
 """,
-    "user_template": """Scenario domain: {scenario}
-Number of turns (user+assistant pairs): {n_turns}
+    "user_template": """Scenario: {scenario}
 Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
@@ -174,8 +174,7 @@ Quality criteria:
   the right information.
 - The ground_truth should note what an ideal information-gathering strategy would look like.
 """,
-    "user_template": """Scenario domain: {scenario}
-Number of turns (user+assistant pairs): {n_turns}
+    "user_template": """Scenario: {scenario}
 Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
@@ -207,8 +206,7 @@ Quality criteria:
 - The ground_truth should include an "optimal_request_sequence" listing the ideal images to ask for.
 - Include a "dead_end" turn — one image that a naive model might ask for but which does not help.
 """,
-    "user_template": """Scenario domain: {scenario}
-Number of turns (user+assistant pairs): {n_turns}
+    "user_template": """Scenario: {scenario}
 Mode: {mode}
 
 Generate a multi-turn conversation in this domain.
@@ -237,7 +235,7 @@ TAXONOMY_ALIASES = {
 }
 
 
-def build_messages(taxonomy: str, scenario: str, n_turns: int, mode: str,
+def build_messages(taxonomy: str, scenario: str, mode: str,
                    seed_image_description: str | None = None) -> list[dict]:
     """Build the [system, user] messages for a synthesis request."""
     taxonomy = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
@@ -246,11 +244,10 @@ def build_messages(taxonomy: str, scenario: str, n_turns: int, mode: str,
 
     tmpl = TAXONOMIES[taxonomy]
 
-    if seed_image_description:
-        seed_hint = f"Seed image description (use this as the starting visual context):\n  {seed_image_description}\n"
-    else:
-        seed_hint = ""
-
+    seed_hint = (
+        f"Seed image description (use this as the starting visual context):\n  {seed_image_description}\n"
+        if seed_image_description else ""
+    )
     mode_note = (
         "text-only (describe each image in the image_description field; no real images exist)"
         if mode == "text-only"
@@ -259,7 +256,6 @@ def build_messages(taxonomy: str, scenario: str, n_turns: int, mode: str,
 
     user_content = tmpl["user_template"].format(
         scenario=scenario,
-        n_turns=n_turns,
         mode=mode_note,
         seed_image_hint=seed_hint,
         schema=OUTPUT_SCHEMA,
@@ -269,3 +265,128 @@ def build_messages(taxonomy: str, scenario: str, n_turns: int, mode: str,
         {"role": "system", "content": tmpl["system"]},
         {"role": "user", "content": user_content},
     ]
+
+
+# ─── Scenario generation (two-layer) ──────────────────────────────────────────
+
+TAXONOMY_DESCRIPTIONS = {
+    "incremental_state_tracking": (
+        "Each turn introduces a new image of the same scene with small but meaningful changes. "
+        "The model must accumulate ALL changes; the answer cannot be derived from the last image alone."
+    ),
+    "belief_revision": (
+        "Early images are ambiguous or misleading; later images clarify. "
+        "The model must update its initial interpretation rather than anchoring on it."
+    ),
+    "cross_turn_entity_tracking": (
+        "The same entities appear across different images and turns. The user refers to prior "
+        "visual content with natural language ('the one from earlier', 'that same object'). "
+        "The model must correctly re-identify and track entities."
+    ),
+    "temporal_causal_reasoning": (
+        "Images depict stages of a process but do NOT arrive in chronological order. "
+        "The model must reconstruct the true temporal sequence and reason about causality."
+    ),
+    "interactive_visual_dialogue": (
+        "Each image the user provides is a direct response to the assistant's prior output "
+        "(user zooms in, annotates, or takes a new angle as instructed). "
+        "The model's outputs shape what it sees next."
+    ),
+    "strategic_info_acquisition": (
+        "The model must identify what visual information is missing and proactively request "
+        "specific additional images. Evaluated on the quality of information requests per turn."
+    ),
+}
+
+SCENARIO_GEN_LAYER1 = {
+    "system": (
+        "You are designing a challenging multi-turn visual reasoning benchmark. "
+        "Generate DIVERSE high-level scenario themes for a given reasoning taxonomy. "
+        "Each theme must probe the taxonomy from a structurally different angle, "
+        "be grounded in a distinct real-world domain, and present a genuinely different "
+        "type of reasoning challenge — not just a different noun substitution."
+    ),
+    "user": (
+        "Taxonomy: {taxonomy_name}\n"
+        "Taxonomy description: {taxonomy_description}\n\n"
+        "Generate {n_themes} DIVERSE high-level themes for this taxonomy.\n"
+        "Avoid these already-used domains: {used_domains}\n\n"
+        'Output a JSON array:\n[\n  {{\n    "theme_id": 1,\n'
+        '    "theme": "<concise theme name>",\n'
+        '    "domain": "<real-world domain>",\n'
+        '    "key_challenge": "<what makes multi-turn reasoning hard in this theme>",\n'
+        '    "example_setup": "<one concrete example of what a conversation looks like>"\n'
+        "  }},\n  ...\n]\n\nOutput ONLY the JSON array."
+    ),
+}
+
+SCENARIO_GEN_LAYER2 = {
+    "system": (
+        "You are generating specific benchmark scenarios from a high-level theme. "
+        "Each scenario must be CONCRETELY different — not template variations with "
+        "different nouns. Vary: number of entities, structure of visual changes, "
+        "domain specifics, and the type of multi-turn interaction required."
+    ),
+    "user": (
+        "Taxonomy: {taxonomy_name}\n"
+        "Theme: {theme}\nDomain: {domain}\nKey challenge: {key_challenge}\n\n"
+        "Generate {n_per_theme} specific, DIVERSE scenario descriptions.\n"
+        "Each will be used to synthesize a full multi-turn visual conversation.\n\n"
+        "Already generated scenarios (do NOT repeat these structures):\n{existing_scenarios}\n\n"
+        'Output a JSON array:\n[\n  {{\n'
+        '    "scenario_id": "{taxonomy_key}_{theme_id:02d}_{idx:02d}",\n'
+        '    "description": "<2-3 sentence scenario, specific enough to guide synthesis>",\n'
+        '    "key_entities": ["<entity 1 with specific name>", "<entity 2>", ...],\n'
+        '    "expected_question_type": "<entity | yes_no | ordering | count>",\n'
+        '    "why_challenging": "<what a model without full history would get wrong>"\n'
+        "  }},\n  ...\n]\n\nOutput ONLY the JSON array."
+    ),
+}
+
+
+def build_scenario_gen_messages(
+    taxonomy: str,
+    layer: int,
+    n_themes: int = 10,
+    n_per_theme: int = 10,
+    used_domains: list[str] | None = None,
+    theme: dict | None = None,
+    existing_scenarios: list[str] | None = None,
+    theme_id: int = 0,
+) -> list[dict]:
+    """Build messages for two-layer scenario generation."""
+    taxonomy = TAXONOMY_ALIASES.get(taxonomy, taxonomy)
+    tax_name = taxonomy.replace("_", " ").title()
+    tax_desc = TAXONOMY_DESCRIPTIONS[taxonomy]
+
+    if layer == 1:
+        user_content = SCENARIO_GEN_LAYER1["user"].format(
+            taxonomy_name=tax_name,
+            taxonomy_description=tax_desc,
+            n_themes=n_themes,
+            used_domains=", ".join(used_domains or []) or "none",
+        )
+        return [
+            {"role": "system", "content": SCENARIO_GEN_LAYER1["system"]},
+            {"role": "user",   "content": user_content},
+        ]
+
+    elif layer == 2:
+        existing_str = "\n".join(f"- {s}" for s in (existing_scenarios or [])) or "none yet"
+        user_content = SCENARIO_GEN_LAYER2["user"].format(
+            taxonomy_name=tax_name,
+            taxonomy_key=taxonomy,
+            theme=theme["theme"],
+            domain=theme["domain"],
+            key_challenge=theme["key_challenge"],
+            n_per_theme=n_per_theme,
+            existing_scenarios=existing_str,
+            theme_id=theme_id,
+            idx=0,  # placeholder; real numbering done in gen_scenarios.py
+        )
+        return [
+            {"role": "system", "content": SCENARIO_GEN_LAYER2["system"]},
+            {"role": "user",   "content": user_content},
+        ]
+
+    raise ValueError(f"layer must be 1 or 2, got {layer}")

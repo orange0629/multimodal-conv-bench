@@ -52,7 +52,7 @@ for (( i=0; i<${#TAXONOMIES[@]}; i+=2 )); do
     if python -u synthesize.py \
         --taxonomy "$TAX" \
         --scenario "$SCENARIO" \
-        --n 1 --n-turns 2 --mode text-only \
+        --n 1 --mode text-only \
         --backend vllm --model "$MODEL" --tp "$TP" \
         --verbose \
         2>&1; then

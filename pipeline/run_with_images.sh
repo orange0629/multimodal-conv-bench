@@ -25,33 +25,40 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 # ── Configuration ──────────────────────────────────────────────────────────────
 MODEL="${MODEL:-qwen}"
 TAXONOMY="${TAXONOMY:-all}"
-N="${N:-34}"   # 34 × 3 scenarios ≈ 100 conversations per taxonomy
-N_TURNS="${N_TURNS:-4}"
+N="${N:-1}"    # 1 × 100 generated scenarios = 100 conversations per taxonomy
 TP="${TP:-2}"
 SEED_IMAGE_DIR="${SEED_IMAGE_DIR:-/projects/bfuj/lzhang49/multimodal-conv-bench/data/coco}"
 OUTPUT_DIR="${OUTPUT_DIR:-output_with_images}"
+N_THEMES="${N_THEMES:-10}"
+N_PER_THEME="${N_PER_THEME:-10}"
+REGEN="${REGEN:-}"
 
 echo "=== conv_synth_img job ==="
 echo "  model          : $MODEL"
 echo "  taxonomy       : $TAXONOMY"
 echo "  n              : $N"
-echo "  n_turns        : $N_TURNS"
 echo "  tp             : $TP"
 echo "  seed_image_dir : $SEED_IMAGE_DIR"
 echo "  started        : $(date)"
 echo ""
 
-python -u synthesize.py \
-    --backend vllm \
-    --model "$MODEL" \
-    --taxonomy "$TAXONOMY" \
-    --config /projects/bfuj/lzhang49/multimodal-conv-bench/configs/scenarios.yaml \
-    --n "$N" \
-    --n-turns "$N_TURNS" \
-    --mode with-images \
-    --seed-image-dir "$SEED_IMAGE_DIR" \
-    --tp "$TP" \
+PYARGS=(
+    -u synthesize.py
+    --backend vllm
+    --model "$MODEL"
+    --taxonomy "$TAXONOMY"
+    --n "$N"
+    --mode with-images
+    --seed-image-dir "$SEED_IMAGE_DIR"
+    --tp "$TP"
+    --n-themes "$N_THEMES"
+    --n-per-theme "$N_PER_THEME"
     --output-dir "$OUTPUT_DIR"
+)
+
+[[ -n "$REGEN" ]] && PYARGS+=(--regen)
+
+python "${PYARGS[@]}"
 
 echo ""
 echo "=== done: $(date) ==="

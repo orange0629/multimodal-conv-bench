@@ -30,13 +30,10 @@ MODEL="${MODEL:-qwen}"
 #           cross_turn_entity_tracking | temporal_causal_reasoning |
 #           interactive_visual_dialogue | strategic_info_acquisition
 # Short aliases: ist | br | ctet | tcr | ivd | sia
-TAXONOMY="${TAXONOMY:-all}"
+TAXONOMY="${TAXONOMY:-temporal_causal_reasoning}"
 
 # Number of samples per scenario
-N="${N:-34}"   # 34 × 3 scenarios ≈ 100 conversations per taxonomy
-
-# Number of turn pairs per conversation
-N_TURNS="${N_TURNS:-4}"
+N="${N:-1}"    # 1 × 100 generated scenarios = 100 conversations per taxonomy
 
 # Generation mode: text-only | with-images
 MODE="${MODE:-text-only}"
@@ -44,47 +41,49 @@ MODE="${MODE:-text-only}"
 # Tensor parallel size — must equal --gpus-per-node above
 TP="${TP:-2}"
 
-# Scenario config or inline scenario string
-CONFIG="${CONFIG:-configs/scenarios.yaml}"
-SCENARIO="${SCENARIO:-}"   # set this to skip the config file
+# Scenario generation (auto-runs on first use, cached after)
+N_THEMES="${N_THEMES:-10}"
+N_PER_THEME="${N_PER_THEME:-10}"
+REGEN="${REGEN:-}"           # set to "--regen" to force regeneration
+
+# Inline scenario string (skips auto-generation entirely)
+SCENARIO="${SCENARIO:-}"
 
 # Output directory
 OUTPUT_DIR="${OUTPUT_DIR:-output}"
 
-# ── Resolve script dir ─────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$REPO_DIR" || exit 1
+# # ── Resolve script dir ─────────────────────────────────────────────────────────
+# SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# REPO_DIR="$(dirname "$SCRIPT_DIR")"
+# cd "$REPO_DIR" || exit 1
 
 echo "=== conv_synth job ==="
-echo "  model    : $MODEL"
-echo "  taxonomy : $TAXONOMY"
-echo "  n        : $N"
-echo "  n_turns  : $N_TURNS"
-echo "  mode     : $MODE"
-echo "  tp       : $TP"
-echo "  repo     : $REPO_DIR"
-echo "  started  : $(date)"
+echo "  model       : $MODEL"
+echo "  taxonomy    : $TAXONOMY"
+echo "  n           : $N"
+echo "  mode        : $MODE"
+echo "  tp          : $TP"
+echo "  n_themes    : $N_THEMES"
+echo "  n_per_theme : $N_PER_THEME"
+echo "  started     : $(date)"
 echo ""
 
 # ── Build python args ──────────────────────────────────────────────────────────
 PYARGS=(
-    synthesize.py
+    -u synthesize.py
     --backend vllm
     --model  "$MODEL"
     --taxonomy "$TAXONOMY"
     --n      "$N"
-    --n-turns "$N_TURNS"
     --mode   "$MODE"
     --tp     "$TP"
+    --n-themes "$N_THEMES"
+    --n-per-theme "$N_PER_THEME"
     --output-dir "$OUTPUT_DIR"
 )
 
-if [[ -n "$SCENARIO" ]]; then
-    PYARGS+=(--scenario "$SCENARIO")
-elif [[ -f "$CONFIG" ]]; then
-    PYARGS+=(--config "$CONFIG")
-fi
+[[ -n "$SCENARIO" ]] && PYARGS+=(--scenario "$SCENARIO")
+[[ -n "$REGEN"    ]] && PYARGS+=(--regen)
 
 # ── Run ────────────────────────────────────────────────────────────────────────
 python "${PYARGS[@]}"
