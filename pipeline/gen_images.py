@@ -44,8 +44,8 @@ def generate_image(
     client: genai.Client,
     description: str,
     prior_images: list[Image.Image],
-    retries: int = 3,
-    retry_delay: float = 5.0,
+    retries: int = 10,
+    retry_delay: float = 10.0,
 ) -> Image.Image | None:
     """
     Generate one image from a description, using prior conversation images as context.
@@ -116,7 +116,9 @@ def process_conversation(
         if img is not None:
             img.save(img_path)
             turn["image_path"] = str(img_path)
-            prior_images.append(img)
+            # Reload from disk so the PIL image has format metadata set,
+            # matching how gemini_test.py loads images (Image.open from file).
+            prior_images.append(Image.open(img_path))
         else:
             print(f"    [warn] turn {turn_id}: image generation failed", file=sys.stderr)
             turn["image_path"] = None
