@@ -74,6 +74,21 @@ MODEL_CONFIGS = {
     },
 }
 
+# Settings applied when --memory-efficient is passed.
+# Needed for large models (Qwen3.5-27B / Gemma-31B) on 2×A40 (80 GB total):
+#   - dtype=bfloat16       : halves weight memory vs fp32
+#   - gpu_memory_utilization=0.90 : leave 10% headroom
+#   - max_model_len=8192   : caps KV cache (default 262K context → OOM)
+#   - max_num_seqs=64      : shrinks profiling forward pass activation memory
+#   - enforce_eager=True   : disables CUDA graph pre-allocation (~2-4 GB)
+MEMORY_EFFICIENT_VLLM = {
+    "dtype": "bfloat16",
+    "gpu_memory_utilization": 0.90,
+    "max_model_len": 8192,
+    "max_num_seqs": 64,
+    "enforce_eager": True,
+}
+
 _FALLBACK_CONFIG = {
     "sampling": {"temperature": 0.9, "top_p": 0.95, "max_tokens": 4096},
     "chat_template_kwargs": {},
@@ -97,10 +112,16 @@ def get_model_config(model_id: str) -> dict:
 
 # ─── Model loading ────────────────────────────────────────────────────────────
 
-def load_vllm(model_id: str, tensor_parallel_size: int = 1):
+def load_vllm(model_id: str, tensor_parallel_size: int = 1, memory_efficient: bool = False):
     from vllm import LLM
-    print(f"[vllm] Loading {model_id} (tp={tensor_parallel_size}) ...", file=sys.stderr)
-    llm = LLM(model=model_id, tensor_parallel_size=tensor_parallel_size)
+    kwargs: dict = {"tensor_parallel_size": tensor_parallel_size}
+    if memory_efficient:
+        kwargs.update(MEMORY_EFFICIENT_VLLM)
+        print(f"[vllm] Loading {model_id} (tp={tensor_parallel_size}, memory-efficient) ...",
+              file=sys.stderr)
+    else:
+        print(f"[vllm] Loading {model_id} (tp={tensor_parallel_size}) ...", file=sys.stderr)
+    llm = LLM(model=model_id, **kwargs)
     print("[vllm] Model ready.", file=sys.stderr)
     return llm, llm.get_tokenizer()
 
@@ -112,13 +133,15 @@ def _strip_thinking(text: str) -> str:
 
 
 def _parse_json(text: str) -> dict:
-    """Strip optional markdown fences then parse JSON."""
+    """Strip markdown fences and common model JSON quirks, then parse."""
     text = text.strip()
     if text.startswith("```"):
         lines = text.splitlines()
         start = 1
         end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
         text = "\n".join(lines[start:end])
+    # Strip trailing commas before ] or } — common model output artifact
+    text = re.sub(r",\s*([\]}])", r"\1", text)
     return json.loads(text)
 
 # ─── Backend implementations ──────────────────────────────────────────────────
@@ -381,6 +404,10 @@ def parse_args():
     p.add_argument("--temperature", type=float, default=None)
     p.add_argument("--tp", type=int, default=1,
                    help="Tensor parallel size for vLLM. Default: 1")
+    p.add_argument("--memory-efficient", action="store_true",
+                   help="Enable memory-saving vLLM options (dtype=bfloat16, "
+                        "max_model_len=8192, enforce_eager, etc.). "
+                        "Use when loading large models on 2×A40.")
 
     p.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     p.add_argument("--verbose", "-v", action="store_true")
@@ -444,7 +471,7 @@ def main():
           f"tp={args.tp}  mode={args.mode}", file=sys.stderr)
 
     # ── Load model once upfront ────────────────────────────────────────────────
-    llm, tok = (load_vllm(model_id, args.tp) if args.backend == "vllm"
+    llm, tok = (load_vllm(model_id, args.tp, args.memory_efficient) if args.backend == "vllm"
                 else (None, None))
 
     tax_key = TAXONOMY_ALIASES.get(args.taxonomy, args.taxonomy)
