@@ -39,7 +39,7 @@ case "$cmd" in
         for entry in "${MODELS[@]}"; do
             read -r gpu port name model rest <<<"$entry"
             log="$LOG_DIR/${name}.log"
-            cmd_to_run="source $CONDA_SH && conda activate $CONDA_ENV && CUDA_VISIBLE_DEVICES=$gpu vllm serve $model --port $port $COMMON_FLAGS 2>&1 | tee $log"
+            cmd_to_run="source $CONDA_SH && conda activate $CONDA_ENV && CUDA_VISIBLE_DEVICES=$gpu VLLM_ATTENTION_BACKEND=XFORMERS VLLM_USE_DEEP_GEMM=0 vllm serve $model --port $port $COMMON_FLAGS 2>&1 | tee $log"
             if screen -ls | grep -q "\.${name}\b"; then
                 echo "[skip] $name already running"
                 continue
