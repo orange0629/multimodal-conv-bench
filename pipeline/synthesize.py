@@ -220,9 +220,25 @@ def _make_meta(taxonomy, scenario, mode, model_id, backend):
     }
 
 
+_MC_OPTION_RE = re.compile(r'\b[A-D][).]')
+
+def _validate_record(parsed: dict) -> None:
+    """Raise ValueError if the record has structural problems worth retrying."""
+    gt = parsed.get("ground_truth", {})
+    turns = parsed.get("turns", [])
+    if gt.get("question_type") == "multiple_choice":
+        last_user = next((t.get("text", "") for t in reversed(turns) if t.get("role") == "user"), "")
+        if not _MC_OPTION_RE.search(last_user):
+            raise ValueError(
+                "multiple_choice question missing A/B/C/D options in final user turn: "
+                + repr(last_user[:120])
+            )
+
+
 def _parse_raw(raw: str, taxonomy: str, scenario: str,
                mode: str, model_id: str, backend: str) -> dict:
     parsed = _parse_json(raw)
+    _validate_record(parsed)
     parsed["_meta"] = _make_meta(taxonomy, scenario, mode, model_id, backend)
     return parsed
 
