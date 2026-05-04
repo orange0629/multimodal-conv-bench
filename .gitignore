@@ -1,0 +1,31 @@
+# API keys and secrets
+.env
+gen-lang-client-*.json
+*-key.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Output data — exclude heavy/transient subdirs only
+outputs/images/
+outputs/images_v2/
+outputs/failed/
+outputs/eval_results/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

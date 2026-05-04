@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/shared/nas/data/m1/shujinwu/anaconda3/bin/pip list:*)"
+    ]
+  }
+}
