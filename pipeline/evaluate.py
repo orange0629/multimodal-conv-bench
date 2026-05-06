@@ -90,13 +90,13 @@ def _classify_failure(
 
 # ─── Conversation builder ──────────────────────────────────────────────────────
 
-def build_eval_messages(record: dict) -> tuple[list[dict], bool]:
+def build_eval_messages(record: dict, text_only: bool = False) -> tuple[list[dict], bool]:
     """
     Build the [system, ...turns] message list for evaluation.
 
-    - Drops the last assistant turn (second-to-last turn overall) to prevent
-      info leakage from assistant summaries right before the final question.
-    - Loads real images from image_path when available; omits image_description.
+    - Drops the last assistant turn to prevent info leakage before the final question.
+    - text_only=True: strips all images (text-only baseline mode).
+    - text_only=False: loads real images from image_path when available.
     - Appends \\boxed{} instruction to the final user question.
 
     Returns (messages, has_images).
@@ -120,7 +120,7 @@ def build_eval_messages(record: dict) -> tuple[list[dict], bool]:
         if is_last and role == "user":
             text += BOXED_INSTRUCTION
 
-        if image_path and Path(image_path).exists():
+        if not text_only and image_path and Path(image_path).exists():
             has_images = True
             img = Image.open(image_path)
             content = [
@@ -193,14 +193,17 @@ def evaluate(
     tok=None,
     temperature: float = 0.0,
     verbose: bool = False,
+    text_only: bool = False,
 ) -> list[dict]:
     n = len(records)
+    if text_only:
+        print("[eval] text-only baseline mode — images stripped", file=sys.stderr)
 
     # Build all messages upfront
     all_messages   = []
     has_images_flags = []
     for record in records:
-        msgs, has_img = build_eval_messages(record)
+        msgs, has_img = build_eval_messages(record, text_only=text_only)
         all_messages.append(msgs)
         has_images_flags.append(has_img)
 
@@ -307,7 +310,7 @@ def print_summary(results: list[dict], model_id: str) -> None:
 
 # ─── Record loading ────────────────────────────────────────────────────────────
 
-def load_records(input_dir: Path, taxonomy: str | None, limit: int | None) -> list[dict]:
+def load_records(input_dir: Path, taxonomy: list[str] | None, limit: int | None) -> list[dict]:
     if input_dir.suffix == ".jsonl":
         paths = [input_dir]
     else:
@@ -318,7 +321,7 @@ def load_records(input_dir: Path, taxonomy: str | None, limit: int | None) -> li
         paths = conv_paths if conv_paths else flat_paths
 
     if taxonomy:
-        paths = [p for p in paths if taxonomy in str(p)]
+        paths = [p for p in paths if any(t in str(p) for t in taxonomy)]
 
     records = []
     for p in paths:
@@ -345,7 +348,8 @@ def parse_args():
     )
     p.add_argument("--input-dir", required=True,
                    help="Directory with JSONL files (output/ or output_images/) or a single JSONL")
-    p.add_argument("--taxonomy", default=None, help="Evaluate only this taxonomy")
+    p.add_argument("--taxonomy", nargs="+", default=None,
+                   help="Evaluate only these taxonomies (space-separated, e.g. --taxonomy belief_revision incremental_state_tracking)")
     p.add_argument("--limit", type=int, default=None, help="Max conversations to evaluate")
 
     p.add_argument("--backend", choices=["vllm", "openai"], default="vllm")
@@ -359,6 +363,8 @@ def parse_args():
 
     p.add_argument("--output-dir", default=str(DEFAULT_EVAL_DIR),
                    help=f"Directory to save per-item results. Default: {DEFAULT_EVAL_DIR}")
+    p.add_argument("--text-only", action="store_true",
+                   help="Baseline mode: strip all images, evaluate on text only")
     p.add_argument("--verbose", "-v", action="store_true",
                    help="Print every item result")
     return p.parse_args()
@@ -371,7 +377,8 @@ def main():
     out_dir   = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[config] backend={args.backend}  model={model_id}  tp={args.tp}", file=sys.stderr)
+    print(f"[config] backend={args.backend}  model={model_id}  tp={args.tp}"
+          f"  text_only={args.text_only}", file=sys.stderr)
 
     llm, tok = (load_vllm(model_id, args.tp, args.memory_efficient)
                 if args.backend == "vllm" else (None, None))
@@ -384,13 +391,15 @@ def main():
     results = evaluate(
         args.backend, model_id, records, llm, tok,
         temperature=args.temperature, verbose=args.verbose,
+        text_only=args.text_only,
     )
 
     # Save full results (including raw_output for every item)
     ts         = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     model_slug = model_id.replace("/", "_")
     tax_slug   = f"_{args.taxonomy}" if args.taxonomy else ""
-    out_file   = out_dir / f"{model_slug}{tax_slug}_{ts}.jsonl"
+    mode_slug  = "_textonly" if args.text_only else ""
+    out_file   = out_dir / f"{model_slug}{tax_slug}{mode_slug}_{ts}.jsonl"
 
     with open(out_file, "w") as f:
         for r in results:

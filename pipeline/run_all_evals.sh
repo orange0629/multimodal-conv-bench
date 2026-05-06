@@ -11,6 +11,7 @@ export LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
 
 INPUT_DIR="${INPUT_DIR:-/projects/bfuj/lzhang49/multimodal-conv-bench/pipeline/output_images}"
 OUTPUT_DIR="${OUTPUT_DIR:-/projects/bfuj/lzhang49/multimodal-conv-bench/eval_results}"
+TAXONOMY="${TAXONOMY:-incremental_state_tracking}"   # optional: space-separated list, e.g. TAXONOMY="belief_revision incremental_state_tracking"
 LIMIT="${LIMIT:-}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,7 +30,8 @@ eval_model() {
         --verbose
         "${extra_args[@]}"
     )
-    [[ -n "$LIMIT" ]] && args+=(--limit "$LIMIT")
+    [[ -n "$TAXONOMY" ]] && args+=(--taxonomy $TAXONOMY)
+    [[ -n "$LIMIT"    ]] && args+=(--limit "$LIMIT")
     python "${args[@]}"
     echo "====== done: $(date) ======"
 }
@@ -41,7 +43,7 @@ eval_model Qwen/Qwen3.5-9B  --tp 1
 eval_model google/gemma-4-E4B-it --tp 1
 
 # Large models — 2 GPUs, memory-efficient on
-# eval_model Qwen/Qwen3.5-27B       --tp 2 --memory-efficient
+eval_model Qwen/Qwen3.5-27B       --tp 2 --memory-efficient
 eval_model google/gemma-4-26B-A4B-it --tp 2 --memory-efficient
 eval_model google/gemma-4-31B-it   --tp 2 --memory-efficient
 
