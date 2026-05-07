@@ -98,11 +98,11 @@ python pipeline/synthesize.py \
 
 ```bash
 # Defaults: Qwen, temporal_causal_reasoning, 1 sample/scenario
-sbatch pipeline/run.sh
+sbatch pipeline/run_synthesize.sh
 
 # Override via env vars
-MODEL=gemma TAXONOMY=ist N=3 sbatch pipeline/run.sh
-MODEL=qwen  TAXONOMY=all N=5 sbatch pipeline/run.sh
+MODEL=gemma TAXONOMY=ist N=3 sbatch pipeline/run_synthesize.sh
+MODEL=qwen  TAXONOMY=all N=5 sbatch pipeline/run_synthesize.sh
 ```
 
 ### Key flags
@@ -151,9 +151,6 @@ python pipeline/gen_images.py --input-dir pipeline/output/ --limit 10
 ```bash
 INPUT=pipeline/output/temporal_causal_reasoning/20260503_072214.jsonl \
 sbatch pipeline/gen_images.sh
-
-# Cross-turn entity tracking variant
-INPUT=pipeline/output/cross_turn_entity_tracking/ sbatch pipeline/gen_images_cross.sh
 ```
 
 **Output:** `pipeline/output_images/<taxonomy>/<conv_id>/`
@@ -190,20 +187,7 @@ python pipeline/evaluate.py \
     --input-dir pipeline/output_images/
 ```
 
-### SLURM (single model)
-
-```bash
-# Default: Qwen3.5-27B, all taxonomies, 2 GPUs
-sbatch pipeline/eval.sh
-
-# Override
-MODEL=google/gemma-4-31B-it TAXONOMY=br TP=2 sbatch pipeline/eval.sh
-
-# Text-only baseline
-sbatch pipeline/eval_textonly_baseline.sh
-```
-
-### Evaluate all models in one run
+### SLURM (Evaluate all models in one run)
 
 ```bash
 bash pipeline/run_all_evals.sh
@@ -253,12 +237,6 @@ Open the analysis notebook to compute per-taxonomy accuracy, failure mode breakd
 jupyter notebook analysis.ipynb
 ```
 
-Pre-generated figures (in repo root):
-- `fig_overall_accuracy.pdf` — model accuracy by taxonomy
-- `fig_item_difficulty.pdf` — item-level difficulty distribution
-- `fig_taxonomy_sensitivity_box.pdf` — score variance across taxonomies
-- `fig_ctet_pie.pdf` — failure mode breakdown for CTET
-
 ---
 
 ## Step 5 — Build the Demo
@@ -269,13 +247,6 @@ Generates a self-contained HTML file for browsing benchmark conversations in any
 # All conversations with images
 python pipeline/build_demo.py \
     --input-dir pipeline/output_images \
-    --output demo.html
-
-# Single taxonomy, first 20 items
-python pipeline/build_demo.py \
-    --input-dir pipeline/output_images \
-    --taxonomy cross_turn_entity_tracking \
-    --limit 20 \
     --output demo.html
 ```
 
@@ -293,11 +264,8 @@ multimodal-conv-bench/
 │   ├── evaluate.py                 # Step 3: run & score models
 │   ├── build_demo.py               # Step 5: HTML demo builder
 │   ├── prompts.py                  # Prompt templates for all 6 taxonomies
-│   ├── run.sh                      # SLURM: synthesis
+│   ├── run_synthesize.sh           # SLURM: synthesis
 │   ├── gen_images.sh               # SLURM: image generation
-│   ├── gen_images_cross.sh         # SLURM: image generation (CTET)
-│   ├── eval.sh                     # SLURM: single-model evaluation
-│   ├── eval_textonly_baseline.sh   # SLURM: text-only baseline
 │   ├── run_all_evals.sh            # Evaluate all models sequentially
 │   └── output/                     # Synthesized conversations
 │       └── <taxonomy>/<timestamp>.jsonl
